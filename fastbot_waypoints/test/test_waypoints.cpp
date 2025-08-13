@@ -58,7 +58,7 @@ TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
   // Send a small reachable goal from typical spawn (0,0,0)
   WaypointAction::Goal goal;
   goal.position.x = 0.50;
-  goal.position.y = -0.75;
+  goal.position.y = -0.90;
 
   auto send_goal_options =
       rclcpp_action::Client<WaypointAction>::SendGoalOptions{};
@@ -87,7 +87,7 @@ TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
   const double expected_y =
       kForceFail
           ? 0.30
-          : -0.75; // force fail by expecting wrong Y when kForceFail=true
+          : -0.90; // force fail by expecting wrong Y when kForceFail=true
   const double tol = kForceFail ? 0.01 : 0.10;
 
   EXPECT_NEAR(x, expected_x, tol);
