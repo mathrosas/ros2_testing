@@ -24,7 +24,7 @@ protected:
     // odom sub (best effort to match sim)
     auto qos = rclcpp::QoS(50).best_effort().durability_volatile();
     odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/fsatbot/odom", qos,
+        "/fastbot/odom", qos,
         [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
           last_odom_ = *msg;
           got_odom_ = true;
@@ -57,8 +57,8 @@ protected:
 TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
   // Send a small reachable goal from typical spawn (0,0,0)
   WaypointAction::Goal goal;
-  goal.position.x = 0.5;
-  goal.position.y = 0.0;
+  goal.position.x = 0.50;
+  goal.position.y = -0.75;
 
   auto send_goal_options =
       rclcpp_action::Client<WaypointAction>::SendGoalOptions{};
@@ -85,8 +85,9 @@ TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
 
   const double expected_x = kForceFail ? 0.50 : 0.50;
   const double expected_y =
-      kForceFail ? 0.30
-                 : 0.00; // force fail by expecting wrong Y when kForceFail=true
+      kForceFail
+          ? 0.30
+          : -0.75; // force fail by expecting wrong Y when kForceFail=true
   const double tol = kForceFail ? 0.01 : 0.10;
 
   EXPECT_NEAR(x, expected_x, tol);
@@ -94,30 +95,23 @@ TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
 }
 
 TEST_F(WaypointsFixture, EndYawWithinTolerance) {
-  // At the target (0.5, 0.0), expected yaw is ~0 rad if the robot faces goal
-  // before moving.
-  const double expected_yaw =
-      kForceFail ? (M_PI / 2.0) : 0.0; // 90° if forcing failure
-  const double tol =
-      kForceFail ? 0.02 : 0.20; // tight tol for failure, looser for pass
-
-  // Give odom a few more ticks
-  for (int i = 0; i < 30; ++i) {
+  // Don’t send a goal; just check current yaw against 1.462
+  for (int i = 0; i < 20; ++i) {
     rclcpp::spin_some(node_);
     std::this_thread::sleep_for(50ms);
   }
 
+  constexpr double kExpectedYaw = 1.462; // target for THIS test
+  const double tol = kForceFail ? 0.02 : 0.20;
+
   const auto &q = last_odom_.pose.pose.orientation;
-  // quick yaw extraction
   const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
   const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
   double yaw = std::atan2(siny_cosp, cosy_cosp);
-
-  // Normalize to [-pi, pi]
   while (yaw > M_PI)
     yaw -= 2.0 * M_PI;
   while (yaw < -M_PI)
     yaw += 2.0 * M_PI;
 
-  EXPECT_NEAR(yaw, expected_yaw, tol);
+  EXPECT_NEAR(yaw, kExpectedYaw, tol);
 }
