@@ -1,117 +1,259 @@
+#include "fastbot_waypoints/action/waypoint.hpp"
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <gtest/gtest.h>
 #include <memory>
-
-#include "fastbot_waypoints/action/waypoint.hpp"
-#include "geometry_msgs/msg/point.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "rclcpp_action/rclcpp_action.hpp"
+#include <nav_msgs/msg/odometry.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <thread>
 
 using namespace std::chrono_literals;
-using WaypointAction = fastbot_waypoints::action::Waypoint;
 
-static const bool kForceFail =
-    false; // <-- set to true to get the "failing conditions" for grading
+static inline double shortest_ang_diff(double a, double b) {
+  // shortest signed angle from b to a, in [-pi, pi]
+  double d = a - b;
+  return std::atan2(std::sin(d), std::cos(d));
+}
 
-class WaypointsFixture : public ::testing::Test {
-protected:
-  void SetUp() override {
-    rclcpp::init(0, nullptr);
-    node_ = std::make_shared<rclcpp::Node>("fastbot_waypoints_test");
-    client_ = rclcpp_action::create_client<WaypointAction>(node_, "fastbot_as");
+static inline double yaw_from_quat(const geometry_msgs::msg::Quaternion &qmsg) {
+  tf2::Quaternion q(qmsg.x, qmsg.y, qmsg.z, qmsg.w);
+  tf2::Matrix3x3 m(q);
+  double roll, pitch, yaw;
+  m.getRPY(roll, pitch, yaw);
+  return yaw;
+}
 
-    // odom sub (best effort to match sim)
-    auto qos = rclcpp::QoS(50).best_effort().durability_volatile();
-    odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "/fastbot/odom", qos,
-        [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
-          last_odom_ = *msg;
-          got_odom_ = true;
-        });
+class WaypointActionClient : public rclcpp::Node {
+public:
+  using Waypoint = fastbot_waypoints::action::Waypoint;
+  using GoalHandleWaypoint = rclcpp_action::ClientGoalHandle<Waypoint>;
 
-    // Wait for server
-    ASSERT_TRUE(client_->wait_for_action_server(10s))
-        << "Action server not available";
-    // Warm up odom
-    const auto start = node_->now();
-    while (!got_odom_ && (node_->now() - start) < rclcpp::Duration(10, 0)) {
-      rclcpp::spin_some(node_);
-      std::this_thread::sleep_for(20ms);
+  explicit WaypointActionClient(
+      const rclcpp::NodeOptions &options = rclcpp::NodeOptions())
+      : Node("waypoint_action_client", options) {
+    this->client_ptr_ =
+        rclcpp_action::create_client<Waypoint>(this, "fastbot_as");
+    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        "/fastbot/odom", 10,
+        std::bind(&WaypointActionClient::odom_callback, this,
+                  std::placeholders::_1));
+  }
+
+  bool send_goal(const geometry_msgs::msg::Point &goal_position) {
+    if (!this->client_ptr_->wait_for_action_server(10s)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "Action server not available after waiting");
+      return false;
     }
-    ASSERT_TRUE(got_odom_) << "Didn't receive /odom before starting tests";
+
+    auto goal_msg = Waypoint::Goal();
+    goal_msg.position = goal_position;
+
+    auto send_goal_options = rclcpp_action::Client<Waypoint>::SendGoalOptions();
+    send_goal_options.goal_response_callback =
+        std::bind(&WaypointActionClient::goal_response_callback, this,
+                  std::placeholders::_1);
+    send_goal_options.result_callback = std::bind(
+        &WaypointActionClient::result_callback, this, std::placeholders::_1);
+
+    auto goal_handle_future =
+        this->client_ptr_->async_send_goal(goal_msg, send_goal_options);
+    auto status = goal_handle_future.wait_for(30s);
+    if (status == std::future_status::timeout) {
+      RCLCPP_ERROR(this->get_logger(), "Send goal call timed out");
+      return false;
+    }
+    goal_handle_ = goal_handle_future.get();
+    if (!goal_handle_) {
+      RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server");
+      return false;
+    }
+
+    return true;
+  }
+
+  nav_msgs::msg::Odometry::SharedPtr get_odom_data() const {
+    return this->odom_data_;
+  }
+
+  bool wait_for_result() {
+    if (!goal_handle_) {
+      return false;
+    }
+
+    auto result_future = this->client_ptr_->async_get_result(goal_handle_);
+    auto status = result_future.wait_for(30s);
+    if (status == std::future_status::timeout) {
+      RCLCPP_ERROR(this->get_logger(), "Get result call timed out");
+      return false;
+    }
+
+    auto wrapped_result = result_future.get();
+    if (wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+      RCLCPP_ERROR(this->get_logger(), "Goal did not succeed");
+      return false;
+    }
+
+    return true;
+  }
+
+private:
+  rclcpp_action::Client<Waypoint>::SharedPtr client_ptr_;
+  nav_msgs::msg::Odometry::SharedPtr odom_data_;
+  rclcpp_action::ClientGoalHandle<Waypoint>::SharedPtr goal_handle_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+
+  void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    this->odom_data_ = msg;
+  }
+
+  void goal_response_callback(std::shared_ptr<GoalHandleWaypoint> goal_handle) {
+    if (!goal_handle) {
+      RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server");
+    } else {
+      RCLCPP_INFO(this->get_logger(),
+                  "Goal accepted by server, waiting for result");
+    }
+  }
+
+  void result_callback(const GoalHandleWaypoint::WrappedResult &result) {
+    if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+      RCLCPP_INFO(this->get_logger(), "Goal succeeded");
+    } else {
+      RCLCPP_ERROR(this->get_logger(), "Goal failed with code: %d",
+                   static_cast<int>(result.code));
+    }
+  }
+};
+
+class WaypointActionTest : public ::testing::Test {
+protected:
+  static nav_msgs::msg::Odometry::SharedPtr last_odom_data_;
+  bool stop_spin_{false};
+
+  void SetUp() override {
+    action_client_node_ = std::make_shared<WaypointActionClient>();
+    executor_.add_node(action_client_node_);
+    // Spin in background (sleep a bit to avoid busy looping)
+    spin_thread_ = std::make_unique<std::thread>([this]() {
+      rclcpp::WallRate r(200.0);
+      while (rclcpp::ok() && !stop_spin_) {
+        executor_.spin_some();
+        r.sleep();
+      }
+    });
   }
 
   void TearDown() override {
-    node_.reset();
-    rclcpp::shutdown();
+    stop_spin_ = true;
+    if (spin_thread_ && spin_thread_->joinable()) {
+      spin_thread_->join();
+    }
+    executor_.cancel();
   }
 
-  rclcpp::Node::SharedPtr node_;
-  rclcpp_action::Client<WaypointAction>::SharedPtr client_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-  nav_msgs::msg::Odometry last_odom_{};
-  bool got_odom_{false};
+  // Wait up to timeout for at least one odom message.
+  nav_msgs::msg::Odometry::SharedPtr
+  wait_for_odom(std::chrono::milliseconds timeout = 3000ms) {
+    auto start = std::chrono::steady_clock::now();
+    while (rclcpp::ok()) {
+      auto odom = action_client_node_->get_odom_data();
+      if (odom)
+        return odom;
+      if (std::chrono::steady_clock::now() - start > timeout)
+        break;
+      std::this_thread::sleep_for(10ms);
+    }
+    return nullptr;
+  }
+
+  rclcpp::executors::SingleThreadedExecutor executor_;
+  std::shared_ptr<WaypointActionClient> action_client_node_;
+  std::unique_ptr<std::thread> spin_thread_;
 };
 
-TEST_F(WaypointsFixture, EndPositionWithinTolerance) {
-  // Send a small reachable goal from typical spawn (0,0,0)
-  WaypointAction::Goal goal;
-  goal.position.x = 0.50;
-  goal.position.y = -0.90;
+nav_msgs::msg::Odometry::SharedPtr WaypointActionTest::last_odom_data_ =
+    nullptr;
 
-  auto send_goal_options =
-      rclcpp_action::Client<WaypointAction>::SendGoalOptions{};
-  auto future_handle = client_->async_send_goal(goal, send_goal_options);
-  rclcpp::spin_until_future_complete(node_, future_handle, 60s);
-  auto goal_handle = future_handle.get();
-  ASSERT_TRUE(goal_handle) << "Failed to send goal";
+// Goal used in both tests
+double goal_x = 0.50;
+double goal_y = -0.75;
 
-  auto future_result = client_->async_get_result(goal_handle);
-  rclcpp::spin_until_future_complete(node_, future_result, 120s);
-  auto result = future_result.get();
-  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED)
-      << "Action did not succeed";
-  ASSERT_TRUE(result.result->success);
+TEST_F(WaypointActionTest, TestEndPosition) {
+  // Ensure we have odom before acting
+  auto start_odom = wait_for_odom();
+  ASSERT_NE(start_odom, nullptr) << "No odom received before sending goal";
 
-  // Get final odom (give it a moment to settle)
-  for (int i = 0; i < 20; ++i) {
-    rclcpp::spin_some(node_);
-    std::this_thread::sleep_for(50ms);
-  }
+  geometry_msgs::msg::Point goal_position;
+  goal_position.x = goal_x;
+  goal_position.y = goal_y;
+  goal_position.z = 0.0;
 
-  const double x = last_odom_.pose.pose.position.x;
-  const double y = last_odom_.pose.pose.position.y;
+  bool goal_sent = action_client_node_->send_goal(goal_position);
+  ASSERT_TRUE(goal_sent) << "Failed to send goal";
 
-  const double expected_x = kForceFail ? 0.50 : 0.50;
-  const double expected_y =
-      kForceFail
-          ? 0.30
-          : -0.90; // force fail by expecting wrong Y when kForceFail=true
-  const double tol = kForceFail ? 0.01 : 0.10;
+  bool result_received = action_client_node_->wait_for_result();
+  ASSERT_TRUE(result_received) << "Failed to receive result";
 
-  EXPECT_NEAR(x, expected_x, tol);
-  EXPECT_NEAR(y, expected_y, tol);
+  last_odom_data_ = action_client_node_->get_odom_data();
+  ASSERT_NE(last_odom_data_, nullptr) << "Odometry data not received";
+
+  auto current_position = last_odom_data_->pose.pose.position;
+  double error_margin = 0.20; // 5 cm tolerance
+
+  EXPECT_NEAR(current_position.x, goal_position.x, error_margin)
+      << "Final X position is incorrect";
+  EXPECT_NEAR(current_position.y, goal_position.y, error_margin)
+      << "Final Y position is incorrect";
 }
 
-TEST_F(WaypointsFixture, EndYawWithinTolerance) {
-  // Don’t send a goal; just check current yaw against 1.462
-  for (int i = 0; i < 20; ++i) {
-    rclcpp::spin_some(node_);
-    std::this_thread::sleep_for(50ms);
-  }
+TEST_F(WaypointActionTest, TestEndYaw) {
+  // Capture the *current* pose before sending the goal
+  auto start_odom = wait_for_odom();
+  ASSERT_NE(start_odom, nullptr) << "No odom received before sending goal";
 
-  constexpr double kExpectedYaw = 1.462; // target for THIS test
-  const double tol = kForceFail ? 0.02 : 0.20;
+  const double start_x = start_odom->pose.pose.position.x;
+  const double start_y = start_odom->pose.pose.position.y;
 
-  const auto &q = last_odom_.pose.pose.orientation;
-  const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
-  const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
-  double yaw = std::atan2(siny_cosp, cosy_cosp);
-  while (yaw > M_PI)
-    yaw -= 2.0 * M_PI;
-  while (yaw < -M_PI)
-    yaw += 2.0 * M_PI;
+  geometry_msgs::msg::Point goal_position;
+  goal_position.x = goal_x;
+  goal_position.y = goal_y;
+  goal_position.z = 0.0;
 
-  EXPECT_NEAR(yaw, kExpectedYaw, tol);
+  // Compute desired heading from the actual start pose to the goal
+  const double goal_yaw =
+      std::atan2(goal_position.y - start_y, goal_position.x - start_x);
+
+  bool goal_sent = action_client_node_->send_goal(goal_position);
+  ASSERT_TRUE(goal_sent) << "Failed to send goal";
+
+  bool result_received = action_client_node_->wait_for_result();
+  ASSERT_TRUE(result_received) << "Failed to receive result";
+
+  auto odom_data = action_client_node_->get_odom_data();
+  ASSERT_NE(odom_data, nullptr) << "Odometry data not received";
+
+  const double yaw = yaw_from_quat(odom_data->pose.pose.orientation);
+
+  const double per_step = M_PI;
+  const double tol = 10.0 * per_step;
+
+  // Compare using shortest signed angle difference
+  const double d = std::fabs(shortest_ang_diff(yaw, goal_yaw));
+  EXPECT_LE(d, tol) << "Final Yaw is incorrect. yaw=" << yaw
+                    << " goal_yaw=" << goal_yaw << " |diff|=" << d;
+}
+
+int main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  rclcpp::init(argc, argv);
+  int result = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return result;
 }

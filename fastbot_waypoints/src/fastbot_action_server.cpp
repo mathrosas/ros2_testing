@@ -2,8 +2,8 @@
 #include <cmath>
 #include <functional>
 #include <memory>
-#include <thread>
 
+#include "fastbot_waypoints/action/waypoint.hpp"
 #include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -12,12 +12,10 @@
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2/LinearMath/Quaternion.h"
 
-// Action generated from your package's action/Waypoint.action
-#include "fastbot_waypoints/action/waypoint.hpp"
-
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 using std::placeholders::_2;
+using std::placeholders::_3;
 
 class WaypointActionServer : public rclcpp::Node {
 public:
@@ -27,15 +25,14 @@ public:
   explicit WaypointActionServer(
       const rclcpp::NodeOptions &options = rclcpp::NodeOptions())
       : Node("fastbot_as", options) {
+    using namespace std::placeholders;
 
     this->action_server_ = rclcpp_action::create_server<Waypoint>(
-        this,
-        "fastbot_as", // action name changed
+        this, "fastbot_as",
         std::bind(&WaypointActionServer::handle_goal, this, _1, _2),
         std::bind(&WaypointActionServer::handle_cancel, this, _1),
         std::bind(&WaypointActionServer::handle_accepted, this, _1));
 
-    // Topics changed to FastBot
     this->cmd_vel_publisher_ =
         this->create_publisher<geometry_msgs::msg::Twist>("/fastbot/cmd_vel",
                                                           10);
@@ -43,7 +40,7 @@ public:
         "/fastbot/odom", 10,
         std::bind(&WaypointActionServer::odom_callback, this, _1));
 
-    RCLCPP_INFO(this->get_logger(), "fastbot_as action server started");
+    RCLCPP_INFO(this->get_logger(), "Action server started");
   }
 
 private:
@@ -52,7 +49,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscriber_;
 
   geometry_msgs::msg::Point position_;
-  double yaw_{0.0};
+  double yaw_;
 
   geometry_msgs::msg::Point des_pos_;
   double yaw_precision_ = M_PI / 90; // +/- 2 degree allowed
@@ -60,7 +57,6 @@ private:
 
   void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     position_ = msg->pose.pose.position;
-
     tf2::Quaternion q(
         msg->pose.pose.orientation.x, msg->pose.pose.orientation.y,
         msg->pose.pose.orientation.z, msg->pose.pose.orientation.w);
@@ -72,22 +68,23 @@ private:
   rclcpp_action::GoalResponse
   handle_goal(const rclcpp_action::GoalUUID &uuid,
               std::shared_ptr<const Waypoint::Goal> goal) {
-    (void)uuid;
     RCLCPP_INFO(this->get_logger(),
-                "Received goal request with position (%.3f, %.3f, %.3f)",
+                "Received goal request with position (%f, %f, %f)",
                 goal->position.x, goal->position.y, goal->position.z);
+    (void)uuid;
     des_pos_ = goal->position;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
   rclcpp_action::CancelResponse
   handle_cancel(const std::shared_ptr<GoalHandleWaypoint> goal_handle) {
-    (void)goal_handle;
     RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+    (void)goal_handle;
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
   void handle_accepted(const std::shared_ptr<GoalHandleWaypoint> goal_handle) {
+    using namespace std::placeholders;
     std::thread{std::bind(&WaypointActionServer::execute, this, _1),
                 goal_handle}
         .detach();
@@ -96,6 +93,7 @@ private:
   void execute(const std::shared_ptr<GoalHandleWaypoint> goal_handle) {
     RCLCPP_INFO(this->get_logger(), "Executing goal");
     rclcpp::Rate loop_rate(25);
+    const auto goal = goal_handle->get_goal();
 
     auto feedback = std::make_shared<Waypoint::Feedback>();
     auto result = std::make_shared<Waypoint::Result>();
@@ -103,11 +101,11 @@ private:
     bool success = true;
 
     while (rclcpp::ok()) {
-      const double desired_yaw =
+      double desired_yaw =
           std::atan2(des_pos_.y - position_.y, des_pos_.x - position_.x);
-      const double err_pos = std::sqrt(std::pow(des_pos_.y - position_.y, 2) +
-                                       std::pow(des_pos_.x - position_.x, 2));
-      const double err_yaw = desired_yaw - yaw_;
+      double err_pos = std::sqrt(std::pow(des_pos_.y - position_.y, 2) +
+                                 std::pow(des_pos_.x - position_.x, 2));
+      double err_yaw = desired_yaw - yaw_;
 
       if (goal_handle->is_canceling()) {
         result->success = false;
@@ -117,17 +115,16 @@ private:
       }
 
       if (err_pos > dist_precision_) {
-        geometry_msgs::msg::Twist twist_msg;
         if (std::fabs(err_yaw) > yaw_precision_) {
-          // fix yaw
-          twist_msg.angular.z = (err_yaw > 0.0) ? 0.65 : -0.65;
-          twist_msg.linear.x = 0.0;
+          auto twist_msg = geometry_msgs::msg::Twist();
+          twist_msg.angular.z = (err_yaw > 0) ? 0.65 : -0.65;
+          cmd_vel_publisher_->publish(twist_msg);
         } else {
-          // go straight
+          auto twist_msg = geometry_msgs::msg::Twist();
           twist_msg.linear.x = 0.6;
-          twist_msg.angular.z = 0.0;
+          twist_msg.angular.z = 0;
+          cmd_vel_publisher_->publish(twist_msg);
         }
-        cmd_vel_publisher_->publish(twist_msg);
 
         feedback->position = position_;
         feedback->state = "moving";
@@ -139,10 +136,10 @@ private:
       loop_rate.sleep();
     }
 
-    geometry_msgs::msg::Twist stop;
-    stop.linear.x = 0.0;
-    stop.angular.z = 0.0;
-    cmd_vel_publisher_->publish(stop);
+    auto twist_msg = geometry_msgs::msg::Twist();
+    twist_msg.linear.x = 0;
+    twist_msg.angular.z = 0;
+    cmd_vel_publisher_->publish(twist_msg);
 
     if (success) {
       result->success = true;
