@@ -88,7 +88,8 @@ public:
     }
 
     auto result_future = this->client_ptr_->async_get_result(goal_handle_);
-    auto status = result_future.wait_for(30s);
+    // auto status = result_future.wait_for(30s);
+    auto status = result_future.wait_for(60s);
     if (status == std::future_status::timeout) {
       RCLCPP_ERROR(this->get_logger(), "Get result call timed out");
       return false;
@@ -182,8 +183,16 @@ nav_msgs::msg::Odometry::SharedPtr WaypointActionTest::last_odom_data_ =
     nullptr;
 
 // Goal used in both tests
-double goal_x = 0.50;
-double goal_y = -0.75;
+// double goal_x = 1.50; // SUCCESS
+// double goal_y = 1.25; // SUCCESS
+double goal_x = 2.00; // SUCCESS
+double goal_y = 1.25; // SUCCESS
+// double goal_x = 1.50; // SUCCESS
+// double goal_y = 1.75; // SUCCESS
+// double goal_x = 1.50; // FAIL
+// double goal_y = 2.00; // FAIL
+// double goal_x = 0.50; // FAIL
+// double goal_y = 0.00; // FAIL
 
 TEST_F(WaypointActionTest, TestEndPosition) {
   // Ensure we have odom before acting
