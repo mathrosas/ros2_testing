@@ -1,20 +1,21 @@
-# FastBot Waypoints — Task 2 (ROS 2 Tests, updated)
+# FastBot Waypoints — Task 2 (ROS 2 Tests) — Updated for Current Code
 
-This README reflects your **current controller and tests**. It explains how to build, run, and test the 'fastbot_waypoints' package for **Checkpoint 23 - Testing (Task 2)**, including **clear pass/fail recipes that match your updated code**.
+This README matches your **current C++ action server** and **GTest node-level tests** for `fastbot_waypoints` (Checkpoint 23 - Testing, Task 2).  
+It explains how to build, run the sim and server, and verify **pass**/**fail** outcomes that align with your code.
 
 ---
 
-## 1) What this package contains
+## 1) What this package includes
 
-- **Action server node:** 'fastbot_action_server' (C++).  
-  Behavior: fixes yaw toward the goal, then drives forward until within distance tolerance, then stops.
-- **Custom action:** 'action/Waypoint.action'.
-- **GTest node-level tests:** 'test/test_waypoints.cpp'  
-  - **End position** '[x,y]' within tolerance.  
-  - **Final yaw** compared to the desired heading computed from the *actual start pose* to the goal.
+- **Action server node:** `fastbot_action_server` (C++).  
+  Behavior: rotate in place to face the goal (±0.65 rad/s) until yaw error ≤ ~2°, then drive forward (`0.6 m/s`) until within **0.05 m** of the goal; stop and report success.
+- **Custom action:** `action/Waypoint.action`.
+- **Node-level tests (GTest):** `test/test_waypoints.cpp`  
+  - **Final position** near goal (`EXPECT_NEAR` with current tolerance **±0.20 m**).  
+  - **Final yaw** vs. **desired heading** computed from the *actual start pose* to the goal using `shortest_ang_diff` (tolerance currently **very lenient** to avoid flakes).
 
-> **Action definition** ('action/Waypoint.action')
-'''text
+> **Action definition** (`action/Waypoint.action`)
+```text
 # Goal
 geometry_msgs/Point position
 ---
@@ -24,13 +25,13 @@ bool success
 # Feedback
 geometry_msgs/Point position
 string state
-'''
+```
 
 ---
 
 ## 2) Package layout (reference)
 
-'''
+```
 fastbot_waypoints/
 ├─ CMakeLists.txt
 ├─ package.xml
@@ -40,53 +41,38 @@ fastbot_waypoints/
 │  └─ fastbot_action_server.cpp
 └─ test/
    └─ test_waypoints.cpp
-'''
+```
 
-**Exact names/topics the tests expect**
-- **Action name:** 'fastbot_as' (server must advertise this exact name)
-- **Odom topic:** '/fastbot/odom'
-- **(Typical) cmd_vel:** '/fastbot/cmd_vel' (used by your server)
-
----
-
-## 3) Your current node logic (summary)
-
-'fastbot_action_server.cpp':
-- Subscribes to **'/fastbot/odom'** with best-effort QoS.
-- Publishes Twist to **'/fastbot/cmd_vel'**.
-- Accepts goals on **'fastbot_as'** (type 'fastbot_waypoints/Waypoint').
-- Controller loop:
-  - Compute 'desired_yaw = atan2(y_err, x_err)' and 'err_yaw = shortest_ang_diff(desired_yaw, yaw_)'.
-  - If '|err_yaw| > yaw_precision_' (≈ ±2°), **rotate in place** (±0.65 rad/s).
-  - Else **drive forward** ('0.6 m/s') straight toward the goal.
-  - Stop when distance error ≤ 'dist_precision_ = 0.05 m'.
-- Prints helpful logs: _Current Yaw_, _Desired Yaw_, _Error Yaw_, and state (“fix yaw” / “go to point”).
+**Exact names/topics used by your code & tests**
+- **Action name:** `fastbot_as` (server must advertise exactly this)
+- **Odometry topic:** `/fastbot/odom`
+- **Velocity command topic:** `/fastbot/cmd_vel`
 
 ---
 
-## 4) Build prerequisites
+## 3) Build prerequisites
 
-'''bash
-# Work from your ROS 2 workspace
+```bash
+# From your ROS 2 workspace
 cd ~/ros2_ws
 colcon build
 source install/setup.bash
-'''
+```
 
-The node/tests use at least: 'rclcpp', 'rclcpp_action', 'geometry_msgs', 'nav_msgs', **tf2** (for quaternion → yaw).
+Dependencies used by your code/tests: `rclcpp`, `rclcpp_action`, `geometry_msgs`, `nav_msgs`, **tf2** (for quaternion→yaw), and generated action types.
 
 ---
 
-## 5) Minimal CMake & package.xml hints
+## 4) CMake & package.xml hints (updated)
 
-> **Important (Environment note):** Whenever you modify 'CMakeLists.txt', include this line (as requested in your environment):
-'''cmake
+> **Environment note (required in your setup):** whenever you modify `CMakeLists.txt`, include:
+```cmake
 # Link directories (macOS Homebrew example; harmless elsewhere)
 link_directories(/opt/homebrew/opt/box2d/lib /opt/homebrew/opt/glfw/lib)
-'''
+```
 
 **CMakeLists.txt** (key lines to adapt)
-'''cmake
+```cmake
 cmake_minimum_required(VERSION 3.8)
 project(fastbot_waypoints)
 
@@ -105,9 +91,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 add_executable(fastbot_action_server src/fastbot_action_server.cpp)
-ament_target_dependencies(fastbot_action_server rclcpp rclcpp_action geometry_msgs nav_msgs tf2)
-# Ensure generated types are visible
-rosidl_target_interfaces(fastbot_action_server ${PROJECT_NAME} "rosidl_typesupport_cpp")
+ament_target_dependencies(fastbot_action_server
+  rclcpp rclcpp_action geometry_msgs nav_msgs tf2)
+
+# Generated types for the target
+rosidl_target_interfaces(fastbot_action_server
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 install(TARGETS fastbot_action_server DESTINATION lib/${PROJECT_NAME})
 
@@ -115,15 +104,17 @@ install(TARGETS fastbot_action_server DESTINATION lib/${PROJECT_NAME})
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_waypoints test/test_waypoints.cpp)
-  ament_target_dependencies(test_waypoints rclcpp rclcpp_action geometry_msgs nav_msgs tf2)
-  rosidl_target_interfaces(test_waypoints ${PROJECT_NAME} "rosidl_typesupport_cpp")
+  ament_target_dependencies(test_waypoints
+    rclcpp rclcpp_action geometry_msgs nav_msgs tf2)
+  rosidl_target_interfaces(test_waypoints
+    ${PROJECT_NAME} "rosidl_typesupport_cpp")
 endif()
 
 ament_package()
-'''
+```
 
 **package.xml** (key lines)
-'''xml
+```xml
 <package format="3">
   <name>fastbot_waypoints</name>
   <version>0.0.1</version>
@@ -144,159 +135,172 @@ ament_package()
 
   <test_depend>ament_cmake_gtest</test_depend>
 </package>
-'''
+```
 
 ---
 
-## 6) Launch the simulation (FastBot, ROS 2)
+## 5) Launch the simulation (FastBot, ROS 2)
 
-Terminal 1:
-'''bash
+**Terminal 1**
+```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch fastbot_gazebo one_fastbot_room.launch.py
-'''
-
+```
 If Gazebo misbehaves:
-'''bash
+```bash
 ps faux | grep gz
 kill -9 <pid>
-'''
+```
 Then relaunch.
 
 ---
 
-## 7) Run the action server
+## 6) Run the action server
 
-Terminal 2:
-'''bash
+**Terminal 2**
+```bash
 source ~/ros2_ws/install/setup.bash
 ros2 run fastbot_waypoints fastbot_action_server
-'''
+```
+
+**What your node does**
+- Subscribes to **`/fastbot/odom`** (QoS: best-effort, volatile).
+- Publishes to **`/fastbot/cmd_vel`**.
+- Serves action **`fastbot_as`**.  
+- Controller thresholds: `yaw_precision_ = π/90` (~2°), `dist_precision_ = 0.05 m`.
 
 ---
 
-## 8) Run the tests — **Passing conditions**
+## 7) Run the tests — default **PASS**
 
-The test client waits up to **10s** for the server and **60s** for the result.  
-Default **goal** values in your test file ('test/test_waypoints.cpp') are:
+The client waits up to **10 s** for the action server, **60 s** for the result.  
+Your current default goal in `test/test_waypoints.cpp` is:
 
-'''cpp
+```cpp
 double goal_x = 2.00; // SUCCESS
 double goal_y = 1.25; // SUCCESS
-'''
+```
 
-Run:
-'''bash
+**Terminal 3**
+```bash
 cd ~/ros2_ws
 colcon build && source install/setup.bash
+
+# Show test output live:
 colcon test --packages-select fastbot_waypoints --event-handler=console_direct+
+
+# Summarize:
 colcon test-result --all
-'''
+```
 
-**What’s checked (as coded now):**
-- **End position** uses 'EXPECT_NEAR' with 'error_margin = 0.20' (i.e., ±0.20 m).  
-- **End yaw** compares the actual yaw to the **desired heading** computed from your **actual start pose** to the goal, using the shortest signed angle difference.  
-  > Current tolerance is **very lenient** in code ('tol = 10π' rad) to avoid false negatives.
-
-**Expected PASS summary:**
-'''
+**Expected PASS:**
+```
 Summary: 2 tests, 0 errors, 0 failures, 0 skipped
-'''
+```
+
+**What's asserted (as coded)**
+- **Position:** `EXPECT_NEAR(..., error_margin)` with `error_margin = 0.20` (±20 cm).  
+  > Note: The comment says “5 cm tolerance” but the code uses **0.20 m**.  
+  > If you want to match the controller stop band (5 cm), set `error_margin = 0.05`.
+- **Yaw:** compares actual yaw to the **desired heading** from *observed start (x,y)* → goal (x,y) using `shortest_ang_diff`.  
+  Current tolerance is intentionally very lenient:
+  ```cpp
+  const double per_step = M_PI;
+  const double tol = 10.0 * per_step; // 10π rad
+  ```
+  Tighten it for stricter grading (see §8B).
 
 ---
 
-## 9) Run the tests — **Failing conditions (matching your code)**
+## 8) Force a **FAIL** (options that align with your code)
 
-You have two straightforward ways to force a failure:
-
-### A) Change the goal to one of your known “bad” pairs
-At the top of 'test/test_waypoints.cpp', replace:
-'''cpp
+### A) Change the goal to a “bad” pair
+At the goal definitions near the top of `test_waypoints.cpp`, replace:
+```cpp
 double goal_x = 2.00; // SUCCESS
 double goal_y = 1.25; // SUCCESS
-'''
-with one of these **fail** examples you annotated:
-'''cpp
+```
+with one of your **known failing** pairs:
+```cpp
 double goal_x = 1.50; // FAIL
 double goal_y = 2.00; // FAIL
 // or
 double goal_x = 0.50; // FAIL
 double goal_y = 0.00; // FAIL
-'''
+```
 
 Then rebuild and re-run tests:
-'''bash
+```bash
 cd ~/ros2_ws && colcon build && source install/setup.bash
 colcon test --packages-select fastbot_waypoints --event-handler=console_direct+
 colcon test-result --all
-'''
+```
 
-### B) Tighten tolerances in the assertions
-- **Position:** change 'double error_margin = 0.20;' to something smaller, e.g. '0.02' (2 cm).
-- **Yaw:** reduce tolerance by setting:
-  '''cpp
+### B) Tighten the tolerances
+- **Position:** in `TestEndPosition`, change:
+  ```cpp
+  double error_margin = 0.20; // → e.g., 0.05
+  ```
+- **Yaw:** in `TestEndYaw`, change:
+  ```cpp
   const double per_step = M_PI/90.0; // 2 degrees
-  const double tol = 10.0 * per_step; // ~20 degrees total tolerance
-  '''
-  (Or set 'tol' directly, e.g. '0.20' rad.)
+  const double tol = 10.0 * per_step; // ~20 degrees
+  ```
+  Or set `const double tol = 0.20;` (≈11.5°).  
+  Smaller tolerances will convert marginal runs into test failures.
 
-Either (A) or (B) will yield a **FAIL** consistent with your current controller and map.
-
-**Typical FAIL summary (example):**
-'''
+**Typical FAIL summary (example)**
+```
 Summary: 2 tests, 1 errors, 0 failures, 1 skipped
-'''
+```
+
+> Note: Your current tests **do not** include a `kForceFail` flag—use (A) or (B) to produce failing outcomes.
 
 ---
 
-## 10) Notes on the updated yaw test
+## 9) Troubleshooting
 
-- The yaw expectation is **computed dynamically** from the observed start pose → goal, so it’s robust to different spawn positions/orientations.
-- Comparison uses 'shortest_ang_diff' to avoid wrap-around issues.
-- By default, the tolerance is intentionally large to reduce map-specific flakes; tighten it when you need a strict check.
-
----
-
-## 11) Troubleshooting
-
-- **No odom received:** Confirm topic is '/fastbot/odom' and the sim is running.
-- **Action server unavailable:** Ensure you started 'fastbot_action_server' and that it advertises **'fastbot_as'**.
-- **Tests hang:** Start **simulation first**, then the **action server**, then run tests.
-- **Robot spins but won't move forward:** Yaw error must be ≤ ~2° before it goes straight; verify the odometry orientation and sign conventions.
+- **No odom received:** confirm `/fastbot/odom` exists and the sim is running.  
+  `ros2 topic echo /fastbot/odom --once`
+- **Action server unavailable:** ensure `fastbot_action_server` is running and advertising `fastbot_as`.  
+  `ros2 action list`
+- **Robot rotates forever:** verify quaternion→yaw conversion and that yaw signs match the sim; it will only move forward when `|err_yaw| ≤ ~2°`.
+- **Tests hang:** launch order matters → **sim first**, then **server**, then **tests**.
+- **Gazebo zombie:** `ps faux | grep gz` → `kill -9 <pid>` → relaunch.
 
 ---
 
-## 12) Quick grading workflow
+## 10) Quick grading workflow
 
 1) **Terminal 1 - Launch sim**
-'''bash
+```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch fastbot_gazebo one_fastbot_room.launch.py
-'''
+```
 
 2) **Terminal 2 - Start action server**
-'''bash
+```bash
 source ~/ros2_ws/install/setup.bash
 ros2 run fastbot_waypoints fastbot_action_server
-'''
+```
 
 3) **Terminal 3 - PASS case (default goal 2.00, 1.25)**
-'''bash
+```bash
 cd ~/ros2_ws && colcon build && source install/setup.bash
 colcon test --packages-select fastbot_waypoints --event-handler=console_direct+
 colcon test-result --all
 # Expect: Summary: 2 tests, 0 errors, 0 failures, 0 skipped
-'''
+```
 
 4) **Terminal 3 - FAIL case**
-   - Edit 'test/test_waypoints.cpp' goal to **(1.50, 2.00)** or **(0.50, 0.00)**, _or_ tighten tolerances as described.  
-   - Rebuild & test:
-'''bash
+   - Edit the goal to **(1.50, 2.00)** or **(0.50, 0.00)**, *or* tighten tolerances.  
+   - Rebuild & re-run tests:
+```bash
 cd ~/ros2_ws && colcon build && source install/setup.bash
 colcon test --packages-select fastbot_waypoints --event-handler=console_direct+
 colcon test-result --all
-'''
+```
 
 ---
 
-**Done.** This README matches your current server and tests, preserving the exact names and topics your code uses, and provides reliable pass/fail paths aligned with your annotations.
+**Done.** This README is aligned with your current controller (yaw-first, then go-to-point, 5 cm stop band) and your tests (dynamic heading check, default ±20 cm position tolerance, generous yaw tolerance). Adjust tolerances and/or goals as above to produce deterministic PASS/FAIL outcomes.
