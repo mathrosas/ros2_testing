@@ -183,11 +183,11 @@ nav_msgs::msg::Odometry::SharedPtr WaypointActionTest::last_odom_data_ =
     nullptr;
 
 // Goal used in both tests
-// double goal_x = 1.50; // SUCCESS
-// double goal_y = 1.25; // SUCCESS
-
-double goal_x = 2.00; // SUCCESS
+double goal_x = 1.50; // SUCCESS
 double goal_y = 1.25; // SUCCESS
+
+// double goal_x = 2.00; // SUCCESS
+// double goal_y = 1.25; // SUCCESS
 
 // double goal_x = 1.50; // SUCCESS
 // double goal_y = 1.75; // SUCCESS
